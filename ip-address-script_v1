@@ -1,0 +1,47 @@
+#!/bin/bash
+
+# Detect interfaces
+echo "Detecting network interfaces..."
+INTERFACES=($(ip -o link show | awk -F': ' '{print $2}' | grep -v lo))
+echo "Available interfaces:"
+for i in "${!INTERFACES[@]}"; do
+    echo "$i) ${INTERFACES[$i]}"
+done
+
+read -p "Select the interface number to configure: " IF_NUM
+INTERFACE=${INTERFACES[$IF_NUM]}
+echo "Selected interface: $INTERFACE"
+
+read -p "Enter static IP with subnet (e.g., 192.168.1.100/24): " STATIC_IP
+read -p "Enter default gateway (e.g., 192.168.1.1): " GATEWAY
+read -p "Enter DNS servers (space separated, e.g., 8.8.8.8 8.8.4.4): " DNS_SERVERS
+
+NETPLAN_FILE="/etc/netplan/01-netcfg.yaml"
+
+# Backup
+sudo cp $NETPLAN_FILE ${NETPLAN_FILE}.bak
+echo "Backup saved as ${NETPLAN_FILE}.bak"
+
+# Write Netplan config
+sudo bash -c "cat > $NETPLAN_FILE <<EOL
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    $INTERFACE:
+      dhcp4: no
+      addresses: [$STATIC_IP]
+      nameservers:
+        addresses: [$(echo $DNS_SERVERS | sed 's/ /, /g')]
+      routes:
+        - to: 0.0.0.0/0
+          via: $GATEWAY
+EOL"
+
+# Set secure permissions
+sudo chmod 600 $NETPLAN_FILE
+
+# Apply
+sudo netplan apply
+
+echo "Static IP and DNS have been set for $INTERFACE with secure permissions."

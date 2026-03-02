@@ -1,0 +1,113 @@
+#!/bin/bash
+
+# Function to validate IPv4 with optional CIDR
+validate_ip() {
+    local ip=$1
+    local cidr=$2
+    if [[ $ip =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+        for octet in $(echo $ip | tr '.' ' '); do
+            if ((octet < 0 || octet > 255)); then
+                return 1
+            fi
+        done
+        if [[ -n $cidr ]]; then
+            if ! [[ $cidr =~ ^[0-9]{1,2}$ ]] || ((cidr < 1 || cidr > 32)); then
+                return 1
+            fi
+        fi
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Function to get interface list
+get_interfaces() {
+    ip -o link show | awk -F': ' '{print $2}' | grep -v lo
+}
+
+# Detect interfaces
+INTERFACES=($(get_interfaces))
+echo "Available interfaces:"
+for i in "${!INTERFACES[@]}"; do
+    echo "$i) ${INTERFACES[$i]}"
+done
+
+# Select interface
+while true; do
+    read -p "Select the interface number to configure: " IF_NUM
+    if [[ "$IF_NUM" =~ ^[0-9]+$ ]] && ((IF_NUM >= 0 && IF_NUM < ${#INTERFACES[@]})); then
+        INTERFACE=${INTERFACES[$IF_NUM]}
+        break
+    else
+        echo "Invalid selection. Try again."
+    fi
+done
+echo "Selected interface: $INTERFACE"
+
+# Input static IP
+while true; do
+    read -p "Enter static IP with CIDR (e.g., 192.168.1.100/24): " INPUT_IP
+    IP_ONLY=$(echo $INPUT_IP | cut -d'/' -f1)
+    CIDR=$(echo $INPUT_IP | cut -d'/' -f2)
+    if validate_ip $IP_ONLY $CIDR; then
+        STATIC_IP="$INPUT_IP"
+        break
+    else
+        echo "Invalid IP format. Try again."
+    fi
+done
+
+# Input gateway
+while true; do
+    read -p "Enter default gateway (e.g., 192.168.1.1): " GATEWAY
+    if validate_ip $GATEWAY; then
+        break
+    else
+        echo "Invalid gateway IP. Try again."
+    fi
+done
+
+# Input DNS servers
+while true; do
+    read -p "Enter DNS servers (space separated, e.g., 8.8.8.8 8.8.4.4): " DNS_SERVERS
+    VALID=true
+    for dns in $DNS_SERVERS; do
+        if ! validate_ip $dns; then
+            VALID=false
+            break
+        fi
+    done
+    $VALID && break || echo "One or more DNS IPs are invalid. Try again."
+done
+
+# Netplan file
+NETPLAN_FILE="/etc/netplan/01-netcfg.yaml"
+
+# Backup existing file
+sudo cp $NETPLAN_FILE ${NETPLAN_FILE}.bak
+echo "Backup saved as ${NETPLAN_FILE}.bak"
+
+# Write Netplan config
+sudo bash -c "cat > $NETPLAN_FILE <<EOL
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    $INTERFACE:
+      dhcp4: no
+      addresses: [$STATIC_IP]
+      nameservers:
+        addresses: [$(echo $DNS_SERVERS | sed 's/ /, /g')]
+      routes:
+        - to: 0.0.0.0/0
+          via: $GATEWAY
+EOL"
+
+# Set secure permissions
+sudo chmod 600 $NETPLAN_FILE
+
+# Apply changes
+sudo netplan apply
+
+echo "✅ Static IP and DNS have been safely applied to $INTERFACE."
